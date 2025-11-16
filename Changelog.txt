@@ -1,0 +1,17 @@
+v 0.5.1.2 (planned) 16-11-2025
+ - LLM Phi3 prompts overwritten to make answers better
+ - ESC and exit keys fixed to make them universially working
+
+
+v 0.5.1 / 16-11-2025
+(files 1.0.21 to 1.0.15)
+: 
+- Successfully changed the main ASI (DLL - the main program executable) file from dynamic to static. Now no more additional .dll are required. Installation and compability is now easier.
+- Successfully implemented AI multi - line subtitles
+- Successfully added 2 new log files: audio and audio2, to get information about if the audio files are loaded
+- Sucessfully implemented StT input - you can now walk up to an NPC, press activation button, and hold you custom Input key, release it -> AI will answer.
+- Whisper included, built with Vulkan, no AVX512
+
+v 0.5.0
+ - initial beta release
+
