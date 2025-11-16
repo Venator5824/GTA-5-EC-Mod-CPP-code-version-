@@ -1,3 +1,4 @@
+//v 1.0.21
 #define _CRT_SECURE_NO_WARNINGS
 #define NOMINMAX
 
@@ -608,3 +609,6 @@ void ShutdownAudioDevice() {
     ma_device_uninit(&g_capture_device);
     LogA("ShutdownAudioDevice: Audio device uninitialized.");
 }
+
+
+//EOF
