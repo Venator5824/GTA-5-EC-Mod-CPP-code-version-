@@ -1,33 +1,53 @@
-// ModMain.cpp – v1.0.21 (Central Header Fix)
+// ModMain.cpp – v1.0.21 (Central Header Fix + Modular NPC Task Fix)
+// ------------------------------------------------------------
+// 1. PREPROCESSOR & LIBRARIES
 // ------------------------------------------------------------
 #define _CRT_SECURE_NO_WARNINGS
 #pragma comment(lib, "ScriptHookV.lib")
 #pragma comment(lib, "dxgi.lib")
-// 1. ONLY INCLUDE main.h
-#include "main.h"
-// 2. IMPLEMENT MINIAUDIO (This MUST be in one .cpp file)
-#define MINIAUDIO_IMPLEMENTATION
-#include "miniaudio.h"
+
+// 2. INCLUDES
 // ------------------------------------------------------------
-// GLOBAL STATE (DEFINITIONS for ModMain.cpp)
-// (This is where the 'extern' variables from main.h are born)
+#include "main.h"                  // ONLY INCLUDE main.h
+#define MINIAUDIO_IMPLEMENTATION   // Miniaudio implementation (must be in one .cpp)
+#include "miniaudio.h"
+
+// ------------------------------------------------------------
+// GLOBAL STATE DEFINITIONS (from main.h extern declarations)
 // ------------------------------------------------------------
 static bool g_isInitialized = false;
-// Mod state
+
+// Rendering
 static std::string g_renderText;
 static DWORD g_renderEndTime = 0;
 int checker_loaded = 1;
+
+// Conversation / Input / LLM states
 ConvoState g_convo_state = ConvoState::IDLE;
 InputState g_input_state = InputState::IDLE;
+//InferenceState g_llm_state = InferenceState::IDLE;
+
+
+// Target NPC
 Ped g_target_ped = 0;
+
+// Chat history & logging
 std::vector<std::string> g_chat_history;
 std::string LOG_FILE_NAME = "kkamel.log";
 std::string LOG_FILE_NAME_METRICS = "kkamel_metrics.log";
 std::string LOG_FILE_NAME_AUDIO = "kkamel_audio.log";
+
+// Persistent NPC names (by model hash)
 static std::map<Hash, std::string> g_persistent_npc_names;
 std::string g_current_npc_name;
-static ULONGLONG g_stt_start_time = 0;  // Added for STT timeout tracking
-static std::chrono::high_resolution_clock::time_point g_llm_start_time;  // Added for LLM timeout tracking
+
+// Timing for timeouts
+static ULONGLONG g_stt_start_time = 0;
+static std::chrono::high_resolution_clock::time_point g_llm_start_time;
+
+// ------------------------------------------------------------
+// LOGGING HELPERS
+// ------------------------------------------------------------
 void Log(const std::string& msg) {
     std::ofstream f(LOG_FILE_NAME, std::ios::app);
     if (f) {
@@ -36,6 +56,7 @@ void Log(const std::string& msg) {
         f << "[" << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << "] " << msg << "\n";
     }
 }
+
 static void LogM(const std::string& msg) {
     std::ofstream f(LOG_FILE_NAME_METRICS, std::ios::app);
     if (f) {
@@ -44,6 +65,7 @@ static void LogM(const std::string& msg) {
         f << "[" << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << "] " << msg << "\n";
     }
 }
+
 static void LogA(const std::string& msg) {
     std::ofstream f(LOG_FILE_NAME_AUDIO, std::ios::app);
     if (f) {
@@ -52,6 +74,7 @@ static void LogA(const std::string& msg) {
         f << "[" << std::put_time(&tm, "%Y-%m-%d %H:%M:%S") << "] " << msg << "\n";
     }
 }
+
 // ------------------------------------------------------------
 // SYSTEM METRICS (RAM / VRAM)
 // ------------------------------------------------------------
@@ -82,8 +105,9 @@ void LogSystemMetrics(const std::string& ctx) {
     }
     LogM("--- END BENCHMARK ---");
 }
+
 // ------------------------------------------------------------
-// KEY HELPERS
+// KEY INPUT HELPERS
 // ------------------------------------------------------------
 static bool g_keyStates[256] = { false };
 bool IsKeyJustPressed(int vk) {
@@ -93,6 +117,7 @@ bool IsKeyJustPressed(int vk) {
     g_keyStates[vk] = pressed;
     return just;
 }
+
 // ------------------------------------------------------------
 // PATH HELPERS
 // ------------------------------------------------------------
@@ -102,10 +127,12 @@ std::string GetModRootPath() {
     std::string exe = buf;
     return exe.substr(0, exe.find_last_of("\\/")) + "\\";
 }
+
 bool DoesFileExist(const std::string& p) {
     std::ifstream f(p.c_str());
     return f.good();
 }
+
 // ------------------------------------------------------------
 // CONVERSATION CLEAN-UP
 // ------------------------------------------------------------
@@ -126,7 +153,7 @@ void EndConversation() {
     }
     g_renderText.clear();
     GAMEPLAY::UPDATE_ONSCREEN_KEYBOARD(); // close any lingering keyboard
-    // Added: Invalidate running futures to prevent lingering threads
+    // Invalidate running futures to prevent lingering threads
     if (g_llm_state == InferenceState::RUNNING && g_llm_future.valid()) {
         g_llm_future = std::future<std::string>();
         g_llm_state = InferenceState::IDLE;
@@ -136,6 +163,7 @@ void EndConversation() {
         g_input_state = InputState::IDLE;
     }
 }
+
 // ------------------------------------------------------------
 // SAFETY CHECK (no mission, no combat, etc.)
 // ------------------------------------------------------------
@@ -152,6 +180,7 @@ bool IsGameInSafeMode() {
     if (g_llm_state != InferenceState::IDLE || g_input_state != InputState::IDLE || g_convo_state != ConvoState::IDLE) return false;
     return true;
 }
+
 // ------------------------------------------------------------
 // MAIN SCRIPT
 // ------------------------------------------------------------
@@ -163,6 +192,7 @@ extern "C" __declspec(dllexport) void ScriptMain() {
         if (!g_isInitialized) {
             Log("ScriptMain: Initialising…");
             auto t0 = std::chrono::high_resolution_clock::now();
+
             // 1. CONFIG
             try { ConfigReader::LoadAllConfigs(); Log("Config OK"); }
             catch (const std::exception& e) {
@@ -173,6 +203,7 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                 TERMINATE(); return;
             }
             LogSystemMetrics("Baseline");
+
             // 2. LLM (Phi-3) – robust fallback chain
             std::string root = GetModRootPath();
             std::string modelPath;
@@ -201,6 +232,7 @@ extern "C" __declspec(dllexport) void ScriptMain() {
             }
             g_ctx = llama_init_from_model(g_model, ctx_params);
             if (!g_ctx) { Log("FATAL: llama_init_from_model"); TERMINATE(); return; }
+
             // 3. OPTIONAL WHISPER (STT)
             if (ConfigReader::g_Settings.StT_Enabled) {
                 std::string sttPath;
@@ -216,6 +248,7 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                 }
             }
             else Log("STT disabled in config");
+
             auto t1 = std::chrono::high_resolution_clock::now();
             LogM("INIT TIME: " + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count()) + " ms");
             LogSystemMetrics("Post-LLM");
@@ -224,8 +257,9 @@ extern "C" __declspec(dllexport) void ScriptMain() {
             UI::_ADD_TEXT_COMPONENT_STRING((char*)"GTA_EC Loaded");
             UI::_DRAW_SUBTITLE_TIMED(5000, true);
         }
+
         // ----------------------------------------------------
-        // MAIN GAME LOOP (the “clean loop” you asked for)
+        // MAIN GAME LOOP
         // ----------------------------------------------------
         while (true) {
             // ----- 1. SUBTITLE RENDERING -----
@@ -240,8 +274,10 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                 UI::_ADD_TEXT_COMPONENT_STRING((char*)g_renderText.c_str());
                 UI::_DRAW_TEXT(0.5f, 0.85f);
             }
+
             Ped playerPed = PLAYER::PLAYER_PED_ID();
             Vector3 playerPos = ENTITY::GET_ENTITY_COORDS(playerPed, true);
+
             // ----- 2. CONVERSATION GUARD (distance / death / ESC) - MODIFIZIERT -----
             if (g_convo_state == ConvoState::IN_CONVERSATION) {
                 if (!ENTITY::DOES_ENTITY_EXIST(g_target_ped) ||
@@ -260,10 +296,14 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                         EndConversation();
                     }
                 }
+                // *** HIER IST DER MODULARE FIX ***
+                // Rufe die "leichte" Update-Funktion aus ModHelpers in jedem Frame auf
+                if (g_convo_state == ConvoState::IN_CONVERSATION) {
+                    UpdateNpcConversationTasks(g_target_ped, playerPed);
+                }
                 // ESC / U key (ABBRUCH IMMER MÖGLICH, wenn in Konversation)
                 if (IsKeyJustPressed(ConfigReader::g_Settings.StopKey_Primary) ||
                     IsKeyJustPressed(ConfigReader::g_Settings.StopKey_Secondary)) {
-
                     // Optionale PTT-Konfliktvermeidung: Ignoriere Secondary, wenn es PTT ist und gerade gedrückt gehalten wird
                     if (ConfigReader::g_Settings.StopKey_Secondary == ConfigReader::g_Settings.StTRB_Activation_Key &&
                         GetAsyncKeyState(ConfigReader::g_Settings.StTRB_Activation_Key) & 0x8000) {
@@ -275,14 +315,15 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                     }
                 }
             }
+
             // ----- 3. LLM INFERENCE COMPLETE (ERWEITERT) -----
             if (g_llm_state == InferenceState::RUNNING) {
                 auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::high_resolution_clock::now() - g_llm_start_time).count();
-                if (elapsed > 30) {  // 30-Sekunden-Timeout
+                if (elapsed > 30) { // 30-Sekunden-Timeout
                     Log("LLM Timeout → discard");
                     if (g_llm_future.valid()) g_llm_future = std::future<std::string>();
                     g_llm_response = "LLM_TIMEOUT";
-                    g_llm_state = InferenceState::COMPLETE;  // Erzwinge Übergang zu Abschnitt 8
+                    g_llm_state = InferenceState::COMPLETE; // Erzwinge Übergang zu Abschnitt 8
                 }
                 else if (g_llm_future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
                     // enforce minimum delay
@@ -300,6 +341,7 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                     g_llm_state = InferenceState::COMPLETE;
                 }
             }
+
             // ----- 4. KEYBOARD INPUT -----
             if (g_input_state == InputState::WAITING_FOR_INPUT) {
                 int kb = GAMEPLAY::UPDATE_ONSCREEN_KEYBOARD();
@@ -314,7 +356,7 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                         std::string prompt = AssemblePrompt(g_target_ped, playerPed, g_chat_history);
                         LogSystemMetrics("Pre-Inference (KB)");
                         g_response_start_time = std::chrono::high_resolution_clock::now();
-                        g_llm_start_time = std::chrono::high_resolution_clock::now();  // Added for LLM timeout
+                        g_llm_start_time = std::chrono::high_resolution_clock::now(); // Added for LLM timeout
                         g_llm_future = std::async(std::launch::async, GenerateLLMResponse, prompt);
                         g_llm_state = InferenceState::RUNNING;
                         g_input_state = InputState::IDLE;
@@ -329,13 +371,14 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                     EndConversation();
                 }
             }
+
             // ----- 5. STT RECORDING (PTT press) -----
             if (g_input_state == InputState::RECORDING) {
                 if (ConfigReader::g_Settings.StTRB_Activation_Key != 0 &&
                     GetAsyncKeyState(ConfigReader::g_Settings.StTRB_Activation_Key) == 0) {
                     LogA("PTT released → stop");
                     StopAudioRecording();
-                    g_stt_start_time = GetTickCount64();  // Added for STT timeout
+                    g_stt_start_time = GetTickCount64(); // Added for STT timeout
                     g_input_state = InputState::TRANSCRIBING;
                     g_stt_future = std::async(std::launch::async, TranscribeAudio, g_audio_buffer);
                     UI::_SET_TEXT_ENTRY((char*)"STRING");
@@ -343,6 +386,7 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                     UI::_DRAW_SUBTITLE_TIMED(5000, true);
                 }
             }
+
             // ----- 6. STT TRANSCRIPTION DONE (MODIFIZIERT) -----
             if (g_input_state == InputState::TRANSCRIBING) {
                 if (g_stt_future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
@@ -364,7 +408,7 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                         std::string prompt = AssemblePrompt(g_target_ped, playerPed, g_chat_history);
                         LogSystemMetrics("Pre-Inference (STT)");
                         g_response_start_time = std::chrono::high_resolution_clock::now();
-                        g_llm_start_time = std::chrono::high_resolution_clock::now();  // Added for LLM timeout
+                        g_llm_start_time = std::chrono::high_resolution_clock::now(); // Added for LLM timeout
                         g_llm_future = std::async(std::launch::async, GenerateLLMResponse, prompt);
                         g_llm_state = InferenceState::RUNNING;
                     }
@@ -373,10 +417,10 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                     }
                     g_input_state = InputState::IDLE;
                 }
-                else if (GetTickCount64() > g_stt_start_time + 10000) {  // 10-Sekunden-Timeout
+                else if (GetTickCount64() > g_stt_start_time + 10000) { // 10-Sekunden-Timeout
                     LogA("STT Timeout → discard");
                     if (g_stt_future.valid()) {
-                        g_stt_future = std::future<std::string>();  // Invalidieren
+                        g_stt_future = std::future<std::string>(); // Invalidieren
                     }
                     UI::_SET_TEXT_ENTRY((char*)"STRING");
                     UI::_ADD_TEXT_COMPONENT_STRING((char*)"Transcription timeout or error.");
@@ -384,7 +428,8 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                     g_input_state = InputState::IDLE;
                 }
             }
-            // ----- 7. START CONVERSATION (T-Key) & PTT START -----
+
+            // ----- 7. START CONVERSATION (T-Key) -----
             if (g_convo_state == ConvoState::IDLE && g_input_state == InputState::IDLE && g_llm_state == InferenceState::IDLE) {
                 if (IsGameInSafeMode()) {
                     // ---- 7a. T-Key → find closest ped ----
@@ -418,9 +463,10 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                                     g_persistent_npc_names[model] = g_current_npc_name;
                                 }
                                 g_convo_state = ConvoState::IN_CONVERSATION;
-
                                 g_chat_history.clear();
-                                ApplyNpcTasks(g_target_ped, playerPed);
+                                // *** HIER ÄNDERN ***
+                                // Rufe die "schwere" Funktion nur EINMAL auf
+                                StartNpcConversationTasks(g_target_ped, playerPed);
                                 // ---- input mode ----
                                 if (ConfigReader::g_Settings.StT_Enabled && g_whisper_ctx) {
                                     g_input_state = InputState::IDLE; // wait for PTT
@@ -439,19 +485,25 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                             }
                         }
                     }
-                    // ---- 7b. PTT PRESS (while already in conversation) ----
-                    else if (ConfigReader::g_Settings.StT_Enabled &&
-                        ConfigReader::g_Settings.StTRB_Activation_Key != 0 &&
-                        IsKeyJustPressed(ConfigReader::g_Settings.StTRB_Activation_Key)) {
-                        LogA("PTT pressed → start recording");
-                        StartAudioRecording();
-                        g_input_state = InputState::RECORDING;
-                        UI::_SET_TEXT_ENTRY((char*)"STRING");
-                        UI::_ADD_TEXT_COMPONENT_STRING((char*)"RECORDING… (release to stop)");
-                        UI::_DRAW_SUBTITLE_TIMED(10000, true);
-                    }
                 }
             }
+
+            // ----- 7b. PTT START (WÄHREND KONVERSATION) -----
+            if (g_convo_state == ConvoState::IN_CONVERSATION &&
+                g_input_state == InputState::IDLE &&
+                g_llm_state == InferenceState::IDLE &&
+                ConfigReader::g_Settings.StT_Enabled &&
+                ConfigReader::g_Settings.StTRB_Activation_Key != 0 &&
+                IsKeyJustPressed(ConfigReader::g_Settings.StTRB_Activation_Key))
+            {
+                LogA("PTT pressed → start recording");
+                StartAudioRecording();
+                g_input_state = InputState::RECORDING;
+                UI::_SET_TEXT_ENTRY((char*)"STRING");
+                UI::_ADD_TEXT_COMPONENT_STRING((char*)"RECORDING… (release to stop)");
+                UI::_DRAW_SUBTITLE_TIMED(10000, true);
+            }
+
             // ----- 8. LLM RESPONSE READY → DISPLAY & PREPARE NEXT INPUT -----
             if (g_llm_state == InferenceState::COMPLETE) {
                 if (g_convo_state != ConvoState::IN_CONVERSATION) { g_llm_state = InferenceState::IDLE; continue; }
@@ -465,15 +517,14 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                 while (g_chat_history.size() > ConfigReader::g_Settings.MaxChatHistoryLines)
                     g_chat_history.erase(g_chat_history.begin());
                 // 2. Use WordWrap to break the long string into multiple lines (e.g., max 50 chars per line)
-                // The WordWrap function you provided internally handles line breaks.
                 std::string wrappedText = WordWrap(clean, 50);
                 // 3. Set the render text using the wrapped string.
-                // NOTE: We do NOT strip newlines now, as the wrapped text relies on them!
                 g_renderText = g_current_npc_name + ": " + wrappedText;
                 g_renderEndTime = GetTickCount64() + 10000; // 10 s
                 Log("RENDER: " + g_renderText);
+                // *** HIER ENTFERNEN ***
+                // ApplyNpcTasks(g_target_ped, playerPed); // <--- ENTFERNT! Sektion 2 macht das jetzt.
                 // ---- decide next input mode ----
-                // ... (rest of your logic remains the same) ...
                 if (ConfigReader::g_Settings.StT_Enabled) {
                     g_input_state = InputState::IDLE;
                     Log("LLM done → STT idle");
@@ -487,6 +538,7 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                 }
                 g_llm_state = InferenceState::IDLE;
             }
+
             WAIT(0);
         } // end while(true)
     }
@@ -499,6 +551,7 @@ extern "C" __declspec(dllexport) void ScriptMain() {
         TERMINATE();
     }
 }
+
 // ------------------------------------------------------------
 // DLL ENTRY
 // ------------------------------------------------------------
@@ -517,6 +570,10 @@ BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
     }
     return TRUE;
 }
+
+// ------------------------------------------------------------
+// WORD WRAP UTILITY
+// ------------------------------------------------------------
 std::string WordWrap(const std::string& text, size_t limit = 50) {
     if (text.empty()) return "";
     std::stringstream result;
@@ -547,4 +604,5 @@ std::string WordWrap(const std::string& text, size_t limit = 50) {
     }
     return result.str();
 }
+
 //EOF
