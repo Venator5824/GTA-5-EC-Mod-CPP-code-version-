@@ -1,10 +1,24 @@
-v 0.5.1.2 (planned) 16-11-2025
+v 0.6.0.0 (releasE) 17-11-2025 (public open beta)
+ - included all the changes from 0.5.1
+ - moved to open beta
+ - release as .asi
+ - AVX512 not jet included in download options
+
+
+v 0.5.1.3 (done) 17-11-2025
+- Included all the changes from 0.5.1.2 and 0.5.1.1
+- move to open beta
+- when the NPC stops an conversation on their own will, the conversation will now stop
+ - fixed the Full Screen Error, Vulkan will now pause for 500MS when fullscreen is applied, to allow DirectX to take over and prevent any bugs and display issues
+ - 
+
+v 0.5.1.2 (done) 16-11-2025
  - LLM Phi3 prompts overwritten to make answers better
  - ESC and exit keys fixed to make them universially working
  - move to open beta
 
 
-v 0.5.1 / 16-11-2025
+v 0.5.1.1 / 16-11-2025
 (files 1.0.21 to 1.0.15)
 : 
 - Successfully changed the main ASI (DLL - the main program executable) file from dynamic to static. Now no more additional .dll are required. Installation and compability is now easier.
