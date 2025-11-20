@@ -1,4 +1,6 @@
-// ConfigReader.cpp v1.0.21
+// ConfigReader.cpp v1.0.14
+// BASIERT AUF v1.0.4/1.0.8
+// FIX: GetValueFromINI bereinigt jetzt Kommentare
 #define _CRT_SECURE_NO_WARNINGS
 #include "ConfigReader.h"
 #include "main.h"
