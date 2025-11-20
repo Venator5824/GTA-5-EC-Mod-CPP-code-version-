@@ -1,4 +1,4 @@
-// ModMain.cpp – v1.0.21
+// ModMain.cpp – v1.0.21 (Central Header Fix + Modular NPC Task Fix)
 // ------------------------------------------------------------
 // 1. PREPROCESSOR & LIBRARIES
 // ------------------------------------------------------------
@@ -21,6 +21,8 @@ static bool g_isInitialized = false;
 static std::string g_renderText;
 static DWORD g_renderEndTime = 0;
 int checker_loaded = 1;
+static HWND g_gameHWND = NULL;      // Das Handle des GTA V Fensters (wird nur einmal gesucht)
+static bool g_wasFullscreen = false; // Verfolgt den vorherigen Zustand des Fensters
 
 // Conversation / Input / LLM states
 ConvoState g_convo_state = ConvoState::IDLE;
@@ -140,7 +142,7 @@ void EndConversation() {
     Log("EndConversation()");
     if (g_is_recording) { StopAudioRecording(); LogA("forced stop"); }
     if (ENTITY::DOES_ENTITY_EXIST(g_target_ped))
-        AI::CLEAR_PED_TASKS(g_target_ped);
+        AI::CLEAR_PED_TASKS_IMMEDIATELY(g_target_ped); // <-- DAS IST DER FIX
     g_target_ped = 0;
     g_convo_state = ConvoState::IDLE;
     g_input_state = InputState::IDLE;
@@ -181,6 +183,69 @@ bool IsGameInSafeMode() {
     return true;
 }
 
+
+
+HWND FindGameWindowHandle() {
+    // 1. Liste der wahrscheinlichen Fenstertitel
+    const char* possibleTitles[] = {
+        "Grand Theft Auto V",   // Standardtitel
+        "Enhanced Conversations", // Falls dein Mod den Titel ändert
+        "Rockstar Games"          // Fallback-Titel
+    };
+
+    // 2. Durchsuche die Liste und gib das erste gefundene Handle zurück
+    for (const char* title : possibleTitles) {
+        HWND hwnd = FindWindowA(NULL, title);
+        if (hwnd != NULL) {
+            Log("Found game window handle with title: " + std::string(title));
+            return hwnd;
+        }
+    }
+    Log("FATAL: Could not find game window handle.");
+    return NULL;
+}
+
+
+void HandleFullscreenYield() {
+    if (g_gameHWND == NULL) return; // Kein Handle = nichts zu tun
+
+    // 1. SCHNELLE PRÜFUNG der Fensterabmessungen
+    int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+    RECT windowRect;
+    GetWindowRect(g_gameHWND, &windowRect);
+
+    bool isFullscreen = (windowRect.left == 0 &&
+        windowRect.top == 0 &&
+        windowRect.right == screenWidth &&
+        windowRect.bottom == screenHeight);
+
+    // 2. PRÜFEN auf ZUSTANDSWECHSEL (Nur hier agieren wir!)
+    if (isFullscreen == g_wasFullscreen) {
+        g_wasFullscreen = isFullscreen;
+        return;
+    }
+
+    // --- TRANSITION DETECTED (Übergang wird verarbeitet) ---
+
+    // 3. SICHERE PAUSE
+    DWORD yieldMs = 500; // 500ms
+
+    if (g_llm_state == InferenceState::RUNNING || g_convo_state == ConvoState::IN_CONVERSATION) {
+        // Zustand: BUSY (Generierung läuft oder Konversation aktiv)
+        // Muss warten, um Datenkorruption und Deadlock zu verhindern.
+        LogM("GPU Yield: LLM is BUSY. Blocking thread for " + std::to_string(yieldMs) + "ms for safety.");
+        WAIT(yieldMs);
+    }
+    else {
+        // Zustand: IDLE (Sicher, nur 500ms Pause, um der Rendering-API Platz zu geben)
+        LogM("GPU Yield: IDLE state. Pausing script for " + std::to_string(yieldMs) + "ms.");
+        WAIT(yieldMs);
+    }
+
+    g_wasFullscreen = isFullscreen;
+}
+
 // ------------------------------------------------------------
 // MAIN SCRIPT
 // ------------------------------------------------------------
@@ -192,7 +257,10 @@ extern "C" __declspec(dllexport) void ScriptMain() {
         if (!g_isInitialized) {
             Log("ScriptMain: Initialising…");
             auto t0 = std::chrono::high_resolution_clock::now();
-
+            g_gameHWND = FindGameWindowHandle();
+            if (g_gameHWND == NULL) {
+                Log("FATAL: Cannot find window handle. Mod may crash on fullscreen change.");
+            }
             // 1. CONFIG
             try { ConfigReader::LoadAllConfigs(); Log("Config OK"); }
             catch (const std::exception& e) {
@@ -262,6 +330,8 @@ extern "C" __declspec(dllexport) void ScriptMain() {
         // MAIN GAME LOOP
         // ----------------------------------------------------
         while (true) {
+
+            HandleFullscreenYield();
             // ----- 1. SUBTITLE RENDERING -----
             if (!g_renderText.empty() && GetTickCount64() < g_renderEndTime) {
                 UI::SET_TEXT_FONT(0);
@@ -349,7 +419,7 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                     std::string txt = GAMEPLAY::GET_ONSCREEN_KEYBOARD_RESULT();
                     if (!txt.empty()) {
                         std::string name = GenerateNpcName(ConfigReader::GetPersona(playerPed));
-                        g_chat_history.push_back(name + ": " + txt);
+                        g_chat_history.push_back("<|user|>\n" + txt);
                         while (g_chat_history.size() > ConfigReader::g_Settings.MaxChatHistoryLines)
                             g_chat_history.erase(g_chat_history.begin());
                         if (g_ctx) { llama_memory_t m = llama_get_memory(g_ctx); if (m) llama_memory_clear(m, true); }
@@ -401,7 +471,7 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                     g_stt_future = std::future<std::string>();
                     if (!txt.empty() && txt.length() > 2) {
                         std::string name = GenerateNpcName(ConfigReader::GetPersona(playerPed));
-                        g_chat_history.push_back(name + ": " + txt);
+                        g_chat_history.push_back("<|user|>\n" + txt);
                         while (g_chat_history.size() > ConfigReader::g_Settings.MaxChatHistoryLines)
                             g_chat_history.erase(g_chat_history.begin());
                         if (g_ctx) { llama_memory_t m = llama_get_memory(g_ctx); if (m) llama_memory_clear(m, true); }
@@ -506,24 +576,56 @@ extern "C" __declspec(dllexport) void ScriptMain() {
 
             // ----- 8. LLM RESPONSE READY → DISPLAY & PREPARE NEXT INPUT -----
             if (g_llm_state == InferenceState::COMPLETE) {
-                if (g_convo_state != ConvoState::IN_CONVERSATION) { g_llm_state = InferenceState::IDLE; continue; }
+                if (g_convo_state != ConvoState::IN_CONVERSATION) {
+                    g_llm_state = InferenceState::IDLE;
+                    continue;
+                }
+
+                // --- START DES FIXES ---
+
+                // 1. Prüfe den ROH-Text (g_llm_response), BEVOR er bereinigt wird
+                bool endConvo = false;
+                if (g_llm_response.find("[END_CONVERSATION]") != std::string::npos ||
+                    g_llm_response.find("<|endofchat|>") != std::string::npos ||
+                    g_llm_response.find("Good Bye") != std::string::npos)
+                {
+                    endConvo = true;
+                }
+
+                // 2. BEREINIGE die Antwort (Dies ruft deine verbesserte CleanupResponse auf)
                 std::string clean = CleanupResponse(g_llm_response);
-                // Handle timeout/error cases in display
+
+                // 3. Handle Timeouts oder Fehler
                 if (g_llm_response == "LLM_TIMEOUT" || g_llm_response == "LLM_ERROR") {
                     clean = "Response error or timeout.";
+                    endConvo = true; // Beende auch bei Fehler
                 }
-                // 1. Save the raw, cleaned response to the chat history
-                g_chat_history.push_back(g_current_npc_name + ": " + clean);
+
+                // 4. Speichere die BEREINIGTE (saubere) Antwort in der History
+                g_chat_history.push_back("<|assistant|>\n" + clean);
                 while (g_chat_history.size() > ConfigReader::g_Settings.MaxChatHistoryLines)
                     g_chat_history.erase(g_chat_history.begin());
-                // 2. Use WordWrap to break the long string into multiple lines (e.g., max 50 chars per line)
+
+                // 5. Zeige die BEREINIGTE Antwort an (z.B. nur "Good Bye")
                 std::string wrappedText = WordWrap(clean, 50);
-                // 3. Set the render text using the wrapped string.
                 g_renderText = g_current_npc_name + ": " + wrappedText;
-                g_renderEndTime = GetTickCount64() + 10000; // 10 s
-                Log("RENDER: " + g_renderText);
-                // *** HIER ENTFERNEN ***
-                // ApplyNpcTasks(g_target_ped, playerPed); // <--- ENTFERNT! Sektion 2 macht das jetzt.
+                g_renderEndTime = GetTickCount64() + 10000;
+                Log("RENDER: " + g_renderText); // Dieser Log zeigt jetzt den sauberen Text
+
+                // 6. REAGIERE auf das Stop-Tag (Das ist der automatische Abbruch)
+                if (endConvo) {
+                    Log("LLM requested end of conversation. Ending session.");
+
+                    // Rufe SOFORT EndConversation() auf.
+                    // (Diese enthält bereits AI::CLEAR_PED_TASKS_IMMEDIATELY)
+                    EndConversation();
+
+                    g_llm_state = InferenceState::IDLE; // Setze Status zurück
+                    continue; // Springe zum nächsten Frame und überspringe den "nächsten Input"
+                }
+                // --- ENDE DES FIXES ---
+
+                // 7. (Wird nur erreicht, wenn endConvo == false)
                 // ---- decide next input mode ----
                 if (ConfigReader::g_Settings.StT_Enabled) {
                     g_input_state = InputState::IDLE;
@@ -534,7 +636,7 @@ extern "C" __declspec(dllexport) void ScriptMain() {
                         1, (char*)"FMMC_KEY_TIP", (char*)"", (char*)"", (char*)"", (char*)"", (char*)"",
                         ConfigReader::g_Settings.MaxInputChars);
                     g_input_state = InputState::WAITING_FOR_INPUT;
-                    Log("LLM done → keyboard reopened");
+                    
                 }
                 g_llm_state = InferenceState::IDLE;
             }
@@ -595,7 +697,7 @@ std::string WordWrap(const std::string& text, size_t limit = 50) {
             currentWord << c;
         }
     }
-    // Füge das letzte Wort hinzu
+    
     if (currentWord.str().length() > 0) {
         if (currentLineLength + currentWord.str().length() > limit) {
             result << '\n';
