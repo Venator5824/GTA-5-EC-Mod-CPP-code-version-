@@ -1,5 +1,5 @@
-// ModHelpers.h v1.0.15
-// (Bereinigt, enthält nur noch ApplyNpcTasks)
+// ModHelpers.h v1.0.14
+// 
 #pragma once
 #include "main.h" 
 #include "types.h"
@@ -13,3 +13,6 @@
 void StartNpcConversationTasks(Ped npc, Ped player);
 
 void UpdateNpcConversationTasks(Ped npc, Ped player);
+
+
+//EOF
